@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>KikiPaint</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <style>
+    * { box-sizing: border-box; }
+    body, html {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      font-family: sans-serif;
+      touch-action: none;
+    }
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      touch-action: none;
+    }
+    #toolbar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: #fff;
+      border-top: 1px solid #ccc;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 8px;
+      z-index: 9999;
+      align-items: center;
+    }
+    .control {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      font-size: 12px;
+    }
+    button, input[type=color], input[type=range] {
+      font-size: 14px;
+      padding: 4px;
+    }
+    .active {
+      background: #007bff;
+      color: white;
+    }
+    #layerPanel {
+      position: fixed;
+      top: 0;
+      left: 0;
+      background: #ffffffee;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      padding: 5px;
+      gap: 4px;
+      max-height: 90%;
+      overflow-y: auto;
+    }
+    .layer-controls {
+      display: flex;
+      gap: 2px;
+      margin-bottom: 2px;
+    }
+    .layer-btn {
+      font-size: 10px;
+      padding: 2px 4px;
+    }
+    #title {
+      position: fixed;
+      top: 0;
+      right: 0;
+      background: #000;
+      color: #fff;
+      padding: 5px 10px;
+      font-weight: bold;
+      z-index: 10000;
+      border-bottom-left-radius: 10px;
+    }
+    #recentColors {
+      display: flex;
+      gap: 4px;
+      margin-top: 4px;
+      flex-wrap: wrap;
+    }
+    .color-dot {
+      width: 20px;
+      height: 20px;
+      border: 1px solid #000;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="title">KikiPaint</div>
+<div id="layerPanel"></div>
+
+<div id="toolbar">
+  <button id="toggleDraw">Dibujar</button>
+
+  <div class="control">
+    <label for="colorPicker">Color</label>
+    <input type="color" id="colorPicker" value="#000000">
+    <div id="recentColors"></div>
+  </div>
+
+  <div class="control">
+    <label for="alphaPicker">Transparencia</label>
+    <input type="range" id="alphaPicker" min="0" max="1" step="0.01" value="1">
+  </div>
+
+  <div class="control">
+    <label for="thicknessPicker">Tamaño</label>
+    <input type="range" id="thicknessPicker" min="1" max="20" value="4">
+  </div>
+
+  <button id="toggleEraser">Borrar</button>
+  <button id="addLayer">+ Capa</button>
+  <button id="clearLayer">Limpiar</button>
+</div>
+
+<script>
+  let drawing = false;
+  let allowDraw = false;
+  let erasing = false;
+  const layers = [], strokes = [], contexts = [];
+  let currentLayer = 0;
+  const layerPanel = document.getElementById("layerPanel");
+
+  const colorPicker = document.getElementById("colorPicker");
+  const alphaPicker = document.getElementById("alphaPicker");
+  const thicknessPicker = document.getElementById("thicknessPicker");
+
+  const recentColors = [];
+  const maxRecentColors = 6;
+  const recentContainer = document.getElementById("recentColors");
+
+  let currentColor = colorPicker.value;
+  let currentAlpha = parseFloat(alphaPicker.value);
+
+  function addRecentColor(color) {
+    if (recentColors.includes(color)) return;
+    recentColors.unshift(color);
+    if (recentColors.length > maxRecentColors) recentColors.pop();
+    renderRecentColors();
+  }
+
+  function renderRecentColors() {
+    recentContainer.innerHTML = '';
+    recentColors.forEach(color => {
+      const dot = document.createElement("div");
+      dot.className = "color-dot";
+      dot.style.backgroundColor = color;
+      dot.onclick = () => {
+        currentColor = color;
+        colorPicker.value = color;
+      };
+      recentContainer.appendChild(dot);
+    });
+  }
+
+  colorPicker.addEventListener('input', () => {
+    currentColor = colorPicker.value;
+    addRecentColor(currentColor);
+  });
+
+  alphaPicker.addEventListener('input', () => {
+    currentAlpha = parseFloat(alphaPicker.value);
+  });
+
+  function rgba(hex, alpha) {
+    const r = parseInt(hex.substr(1, 2), 16);
+    const g = parseInt(hex.substr(3, 2), 16);
+    const b = parseInt(hex.substr(5, 2), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
+  }
+
+  function createCanvas(zIndex) {
+    const canvas = document.createElement("canvas");
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    canvas.style.zIndex = zIndex;
+    canvas.style.position = "absolute";
+    document.body.appendChild(canvas);
+    return canvas;
+  }
+
+  function drawStroke(ctx, stroke) {
+    if (stroke.points.length < 2) return;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = stroke.color;
+    ctx.lineWidth = stroke.size;
+    ctx.beginPath();
+    ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+    for (let i = 1; i < stroke.points.length; i++) {
+      ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+    }
+    ctx.stroke();
+  }
+
+  function redraw(index) {
+    const ctx = contexts[index];
+    ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    for (const stroke of strokes[index]) {
+      drawStroke(ctx, stroke);
+    }
+  }
+
+  function addLayer() {
+    const index = layers.length;
+    const canvas = createCanvas(index);
+    const ctx = canvas.getContext("2d");
+
+    layers.push(canvas);
+    contexts.push(ctx);
+    strokes.push([]);
+
+    const container = document.createElement("div");
+    container.className = "layer-controls";
+
+    const selectBtn = document.createElement("button");
+    selectBtn.textContent = "Capa " + (index + 1);
+    selectBtn.className = "layer-btn";
+    selectBtn.onclick = () => {
+      currentLayer = index;
+      updateLayerSelection();
+    };
+
+    const upBtn = document.createElement("button");
+    upBtn.textContent = "↑";
+    upBtn.className = "layer-btn";
+    upBtn.onclick = () => moveLayer(index, -1);
+
+    const downBtn = document.createElement("button");
+    downBtn.textContent = "↓";
+    downBtn.className = "layer-btn";
+    downBtn.onclick = () => moveLayer(index, 1);
+
+    const toggleVisBtn = document.createElement("button");
+    toggleVisBtn.textContent = "👁️";
+    toggleVisBtn.className = "layer-btn";
+    toggleVisBtn.onclick = () => {
+      const visible = layers[index].style.display !== "none";
+      layers[index].style.display = visible ? "none" : "block";
+      toggleVisBtn.textContent = visible ? "🚫" : "👁️";
+    };
+
+    container.appendChild(selectBtn);
+    container.appendChild(upBtn);
+    container.appendChild(downBtn);
+    container.appendChild(toggleVisBtn);
+
+    layerPanel.appendChild(container);
+    updateLayerSelection();
+  }
+
+  function updateLayerSelection() {
+    const buttons = layerPanel.querySelectorAll(".layer-controls");
+    buttons.forEach((group, i) => {
+      group.querySelectorAll("button")[0].classList.toggle("active", i === currentLayer);
+    });
+  }
+
+  function moveLayer(index, direction) {
+    const newIndex = index + direction;
+    if (newIndex < 0 || newIndex >= layers.length) return;
+
+    [layers[index], layers[newIndex]] = [layers[newIndex], layers[index]];
+    [contexts[index], contexts[newIndex]] = [contexts[newIndex], contexts[index]];
+    [strokes[index], strokes[newIndex]] = [strokes[newIndex], strokes[index]];
+
+    layers.forEach((c, i) => c.style.zIndex = i);
+    currentLayer = newIndex;
+
+    const children = Array.from(layerPanel.children);
+    layerPanel.insertBefore(children[index], children[newIndex]);
+    updateLayerSelection();
+    redraw(index);
+    redraw(newIndex);
+  }
+
+  function clearCurrentLayer() {
+    const ctx = contexts[currentLayer];
+    ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    strokes[currentLayer] = [];
+  }
+
+  let currentStroke = null;
+  function getPos(e) {
+    const touch = e.touches[0];
+    return { x: touch.clientX, y: touch.clientY };
+  }
+
+  document.addEventListener("touchstart", (e) => {
+    if (!allowDraw) return;
+    drawing = true;
+    const pos = getPos(e);
+    const color = erasing ? "rgba(255,255,255,1)" : rgba(currentColor, currentAlpha);
+    currentStroke = {
+      color,
+      size: erasing ? 25 : parseInt(thicknessPicker.value),
+      points: [pos]
+    };
+  }, { passive: false });
+
+  document.addEventListener("touchmove", (e) => {
+    if (!drawing || !allowDraw) return;
+    e.preventDefault();
+    const pos = getPos(e);
+    currentStroke.points.push(pos);
+    drawStroke(contexts[currentLayer], currentStroke);
+  }, { passive: false });
+
+  document.addEventListener("touchend", () => {
+    if (currentStroke && allowDraw) {
+      strokes[currentLayer].push(currentStroke);
+    }
+    drawing = false;
+    currentStroke = null;
+  });
+
+  document.getElementById("toggleDraw").onclick = () => {
+    allowDraw = !allowDraw;
+    document.getElementById("toggleDraw").classList.toggle("active", allowDraw);
+    document.getElementById("toggleDraw").textContent = allowDraw ? "Dibujando" : "Dibujar";
+  };
+
+  document.getElementById("toggleEraser").onclick = () => {
+    erasing = !erasing;
+    document.getElementById("toggleEraser").classList.toggle("active", erasing);
+  };
+
+  document.getElementById("clearLayer").onclick = clearCurrentLayer;
+  document.getElementById("addLayer").onclick = addLayer;
+
+  window.addEventListener("resize", () => {
+    layers.forEach((canvas, i) => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      redraw(i);
+    });
+  });
+
+  addLayer(); // Inicializar con una capa
+</script>
+</body>
+</html>
